@@ -19,9 +19,14 @@ use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
 use switch::__switch;
-pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
+pub use task::{TaskControlBlock, TaskStatus};
+
+const MAX_SYSCALL_NUM: usize = 500;
+
+static mut SYSCALL_TIMES: [[usize; MAX_SYSCALL_NUM]; MAX_APP_NUM] =
+    [[0; MAX_SYSCALL_NUM]; MAX_APP_NUM];
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -135,6 +140,28 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    fn record_current_syscall(&self, syscall_id: usize) {
+        if syscall_id >= MAX_SYSCALL_NUM {
+            return;
+        }
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        drop(inner);
+        unsafe {
+            SYSCALL_TIMES[current][syscall_id] += 1;
+        }
+    }
+
+    fn get_current_syscall_times(&self, syscall_id: usize) -> usize {
+        if syscall_id >= MAX_SYSCALL_NUM {
+            return 0;
+        }
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        drop(inner);
+        unsafe { SYSCALL_TIMES[current][syscall_id] }
+    }
 }
 
 /// Run the first task in task list.
@@ -158,6 +185,15 @@ fn mark_current_exited() {
     TASK_MANAGER.mark_current_exited();
 }
 
+/// Record one syscall for the current running task.
+pub fn record_current_syscall(syscall_id: usize) {
+    TASK_MANAGER.record_current_syscall(syscall_id);
+}
+
+/// Get the number of times the current running task has invoked a syscall.
+pub fn get_current_syscall_times(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_current_syscall_times(syscall_id)
+}
 /// Suspend the current 'Running' task and run the next task in task list.
 pub fn suspend_current_and_run_next() {
     mark_current_suspended();
