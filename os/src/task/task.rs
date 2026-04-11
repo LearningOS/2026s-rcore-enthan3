@@ -1,4 +1,5 @@
 //! Types related to task management
+
 use super::TaskContext;
 use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
@@ -10,22 +11,16 @@ use crate::trap::{trap_handler, TrapContext};
 pub struct TaskControlBlock {
     /// Save task context
     pub task_cx: TaskContext,
-
     /// Maintain the execution status of the current process
     pub task_status: TaskStatus,
-
     /// Application address space
     pub memory_set: MemorySet,
-
     /// The phys page number of trap context
     pub trap_cx_ppn: PhysPageNum,
-
     /// The size(top addr) of program which is loaded from elf file
     pub base_size: usize,
-
     /// Heap bottom
     pub heap_bottom: usize,
-
     /// Program break
     pub program_brk: usize,
 }
@@ -35,10 +30,12 @@ impl TaskControlBlock {
     pub fn get_trap_cx(&self) -> &'static mut TrapContext {
         self.trap_cx_ppn.get_mut()
     }
+
     /// get the user token
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
+
     /// Based on the elf info in program, build the contents of task in a new address space
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
@@ -75,7 +72,9 @@ impl TaskControlBlock {
         );
         task_control_block
     }
-    /// change the location of the program break. return None if failed.
+
+    /// change the location of the program break.
+    /// return None if failed.
     pub fn change_program_brk(&mut self, size: i32) -> Option<usize> {
         let old_break = self.program_brk;
         let new_brk = self.program_brk as isize + size as isize;
@@ -95,6 +94,16 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// mmap anonymous pages in the current task.
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> bool {
+        self.memory_set.mmap(start, len, prot)
+    }
+
+    /// munmap pages in the current task.
+    pub fn munmap(&mut self, start: usize, len: usize) -> bool {
+        self.memory_set.munmap(start, len)
     }
 }
 
