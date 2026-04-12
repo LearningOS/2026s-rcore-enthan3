@@ -4,7 +4,7 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
@@ -22,6 +22,7 @@ pub struct OSInode {
     writable: bool,
     inner: UPSafeCell<OSInodeInner>,
 }
+
 /// The OS inode inner in 'UPSafeCell'
 pub struct OSInodeInner {
     offset: usize,
@@ -37,6 +38,7 @@ impl OSInode {
             inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
         }
     }
+
     /// read all data from the inode
     pub fn read_all(&self) -> Vec<u8> {
         let mut inner = self.inner.exclusive_access();
@@ -106,11 +108,9 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     let (readable, writable) = flags.read_write();
     if flags.contains(OpenFlags::CREATE) {
         if let Some(inode) = ROOT_INODE.find(name) {
-            // clear size
             inode.clear();
             Some(Arc::new(OSInode::new(readable, writable, inode)))
         } else {
-            // create file
             ROOT_INODE
                 .create(name)
                 .map(|inode| Arc::new(OSInode::new(readable, writable, inode)))
@@ -125,13 +125,25 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+/// Create a hard link
+pub fn link_file(old_name: &str, new_name: &str) -> isize {
+    ROOT_INODE.link(old_name, new_name)
+}
+
+/// Remove a hard link
+pub fn unlink_file(name: &str) -> isize {
+    ROOT_INODE.unlink(name)
+}
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
     }
+
     fn writable(&self) -> bool {
         self.writable
     }
+
     fn read(&self, mut buf: UserBuffer) -> usize {
         let mut inner = self.inner.exclusive_access();
         let mut total_read_size = 0usize;
@@ -145,6 +157,7 @@ impl File for OSInode {
         }
         total_read_size
     }
+
     fn write(&self, buf: UserBuffer) -> usize {
         let mut inner = self.inner.exclusive_access();
         let mut total_write_size = 0usize;
@@ -155,5 +168,16 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+
+    fn get_stat(&self) -> Stat {
+        let inner = self.inner.exclusive_access();
+        let inode = &inner.inode;
+        let mode = if inode.is_dir() {
+            StatMode::DIR
+        } else {
+            StatMode::FILE
+        };
+        Stat::new(0, inode.inode_id() as u64, mode, inode.nlink())
     }
 }

@@ -1,5 +1,5 @@
 //!Stdin & Stdout
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
 use crate::task::suspend_current_and_run_next;
@@ -14,12 +14,13 @@ impl File for Stdin {
     fn readable(&self) -> bool {
         true
     }
+
     fn writable(&self) -> bool {
         false
     }
+
     fn read(&self, mut user_buf: UserBuffer) -> usize {
         assert_eq!(user_buf.len(), 1);
-        // busy loop
         let mut c: usize;
         loop {
             c = console_getchar();
@@ -36,8 +37,13 @@ impl File for Stdin {
         }
         1
     }
+
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
+    }
+
+    fn get_stat(&self) -> Stat {
+        Stat::new(0, 0, StatMode::NULL, 0)
     }
 }
 
@@ -45,16 +51,23 @@ impl File for Stdout {
     fn readable(&self) -> bool {
         false
     }
+
     fn writable(&self) -> bool {
         true
     }
+
     fn read(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot read from stdout!");
     }
+
     fn write(&self, user_buf: UserBuffer) -> usize {
         for buffer in user_buf.buffers.iter() {
             print!("{}", core::str::from_utf8(*buffer).unwrap());
         }
         user_buf.len()
+    }
+
+    fn get_stat(&self) -> Stat {
+        Stat::new(0, 0, StatMode::NULL, 0)
     }
 }
