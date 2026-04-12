@@ -300,6 +300,95 @@ impl MemorySet {
             false
         }
     }
+    /// Remove mapped pages in [start_va, end_va).
+    pub fn remove_area_range(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+
+        if start_vpn >= end_vpn {
+            return true;
+        }
+
+        let mut idx = 0usize;
+        while idx < self.areas.len() {
+            let area_start = self.areas[idx].vpn_range.get_start();
+            let area_end = self.areas[idx].vpn_range.get_end();
+
+            if area_end <= start_vpn || area_start >= end_vpn {
+                idx += 1;
+                continue;
+            }
+
+            let overlap_start = if area_start > start_vpn {
+                area_start
+            } else {
+                start_vpn
+            };
+            let overlap_end = if area_end < end_vpn { area_end } else { end_vpn };
+
+            // remove the whole area
+            if overlap_start == area_start && overlap_end == area_end {
+                {
+                    let area = &mut self.areas[idx];
+                    area.unmap(&mut self.page_table);
+                }
+                self.areas.remove(idx);
+                continue;
+            }
+
+            // remove prefix
+            if overlap_start == area_start {
+                let area = &mut self.areas[idx];
+                for vpn in VPNRange::new(overlap_start, overlap_end) {
+                    area.unmap_one(&mut self.page_table, vpn);
+                }
+                area.vpn_range = VPNRange::new(overlap_end, area_end);
+                idx += 1;
+                continue;
+            }
+
+            // remove suffix
+            if overlap_end == area_end {
+                let area = &mut self.areas[idx];
+                for vpn in VPNRange::new(overlap_start, overlap_end) {
+                    area.unmap_one(&mut self.page_table, vpn);
+                }
+                area.vpn_range = VPNRange::new(area_start, overlap_start);
+                idx += 1;
+                continue;
+            }
+
+            // remove middle part: split into left + right
+            let mut right = MapArea {
+                vpn_range: VPNRange::new(overlap_end, area_end),
+                data_frames: BTreeMap::new(),
+                map_type: self.areas[idx].map_type,
+                map_perm: self.areas[idx].map_perm,
+            };
+
+            {
+                let area = &mut self.areas[idx];
+
+                if area.map_type == MapType::Framed {
+                    for vpn in VPNRange::new(overlap_end, area_end) {
+                        let frame = area.data_frames.remove(&vpn).unwrap();
+                        right.data_frames.insert(vpn, frame);
+                    }
+                }
+
+                for vpn in VPNRange::new(overlap_start, overlap_end) {
+                    area.unmap_one(&mut self.page_table, vpn);
+                }
+
+                area.vpn_range = VPNRange::new(area_start, overlap_start);
+            }
+
+            self.areas.insert(idx + 1, right);
+            idx += 2;
+        }
+
+        true
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -400,6 +489,7 @@ impl MapArea {
             current_vpn.step();
         }
     }
+
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -447,3 +537,5 @@ pub fn remap_test() {
         .executable(),);
     println!("remap_test passed!");
 }
+
+
