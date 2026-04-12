@@ -4,6 +4,7 @@ mod inode;
 mod stdio;
 
 use crate::mm::UserBuffer;
+use bitflags::*;
 
 /// trait File for all file types
 pub trait File: Send + Sync {
