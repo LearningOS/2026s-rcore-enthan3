@@ -78,6 +78,83 @@ impl MemorySet {
             self.areas.remove(idx);
         }
     }
+
+    /// remove mappings in [start_va, end_va)
+    pub fn remove_area_range(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let mut current_start = start_va.floor();
+        let end_vpn = end_va.ceil();
+
+        while current_start.0 < end_vpn.0 {
+            let idx = if let Some((idx, _)) = self.areas.iter().enumerate().find(|(_, area)| {
+                let area_start = area.vpn_range.get_start();
+                let area_end = area.vpn_range.get_end();
+                area_start.0 <= current_start.0 && current_start.0 < area_end.0
+            }) {
+                idx
+            } else {
+                return false;
+            };
+
+            let area_start = self.areas[idx].vpn_range.get_start();
+            let area_end = self.areas[idx].vpn_range.get_end();
+            let map_type = self.areas[idx].map_type;
+            let map_perm = self.areas[idx].map_perm;
+            let remove_end = if end_vpn.0 < area_end.0 {
+                end_vpn
+            } else {
+                area_end
+            };
+
+            let left_has = area_start.0 < current_start.0;
+            let right_has = remove_end.0 < area_end.0;
+
+            for vpn in VPNRange::new(current_start, remove_end) {
+                self.areas[idx].unmap_one(&mut self.page_table, vpn);
+            }
+
+            if left_has && right_has {
+                let mut right_area = MapArea {
+                    vpn_range: VPNRange::new(remove_end, area_end),
+                    data_frames: BTreeMap::new(),
+                    map_type,
+                    map_perm,
+                };
+                if map_type == MapType::Framed {
+                    for vpn in VPNRange::new(remove_end, area_end) {
+                        if let Some(frame) = self.areas[idx].data_frames.remove(&vpn) {
+                            right_area.data_frames.insert(vpn, frame);
+                        }
+                    }
+                }
+                self.areas[idx].vpn_range = VPNRange::new(area_start, current_start);
+                self.areas.insert(idx + 1, right_area);
+            } else if left_has {
+                self.areas[idx].vpn_range = VPNRange::new(area_start, current_start);
+            } else if right_has {
+                let mut right_area = MapArea {
+                    vpn_range: VPNRange::new(remove_end, area_end),
+                    data_frames: BTreeMap::new(),
+                    map_type,
+                    map_perm,
+                };
+                if map_type == MapType::Framed {
+                    for vpn in VPNRange::new(remove_end, area_end) {
+                        if let Some(frame) = self.areas[idx].data_frames.remove(&vpn) {
+                            right_area.data_frames.insert(vpn, frame);
+                        }
+                    }
+                }
+                self.areas[idx] = right_area;
+            } else {
+                self.areas.remove(idx);
+            }
+
+            current_start = remove_end;
+        }
+
+        true
+    }
+
     /// Add a new MapArea into this MemorySet.
     /// Assuming that there are no conflicts in the virtual address
     /// space.
