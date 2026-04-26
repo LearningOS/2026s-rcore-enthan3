@@ -102,6 +102,8 @@ pub struct DiskInode {
     pub indirect2: u32,
     /// inode type
     type_: DiskInodeType,
+    /// number of hard links
+    pub nlink: u32,
 }
 
 impl DiskInode {
@@ -112,6 +114,7 @@ impl DiskInode {
         self.indirect1 = 0;
         self.indirect2 = 0;
         self.type_ = type_;
+        self.nlink = 1;
     }
     /// inode is directory?
     pub fn is_dir(&self) -> bool {

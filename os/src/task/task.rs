@@ -28,6 +28,10 @@ impl TaskControlBlock {
         let inner = process.inner_exclusive_access();
         inner.memory_set.token()
     }
+    /// Set scheduling priority for this task.
+    pub fn set_priority(&self, priority: usize) {
+        self.inner_exclusive_access().priority = priority;
+    }
 }
 
 pub struct TaskControlBlockInner {
@@ -41,6 +45,10 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+    /// Scheduler priority. Larger means more CPU share.
+    pub priority: usize,
+    /// Scheduler stride pass value.
+    pub stride: usize,
 }
 
 impl TaskControlBlockInner {
@@ -75,6 +83,8 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    priority: 16,
+                    stride: 0,
                 })
             },
         }

@@ -54,10 +54,8 @@ pub const SYSCALL_EXEC: usize = 221;
 pub const SYSCALL_WAITPID: usize = 260;
 /// set priority syscall
 pub const SYSCALL_SET_PRIORITY: usize = 140;
-/*
 /// sbrk syscall
 pub const SYSCALL_SBRK: usize = 214;
-*/
 /// munmap syscall
 pub const SYSCALL_MUNMAP: usize = 215;
 /// mmap syscall
@@ -135,6 +133,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2]),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
         SYSCALL_SET_PRIORITY => sys_set_priority(args[0] as isize),
+        SYSCALL_SBRK => sys_sbrk(args[0] as i32),
         SYSCALL_SPAWN => sys_spawn(args[0] as *const u8),
         SYSCALL_THREAD_CREATE => sys_thread_create(args[0], args[1]),
         SYSCALL_WAITTID => sys_waittid(args[0]) as isize,

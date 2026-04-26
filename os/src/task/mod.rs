@@ -27,6 +27,7 @@ use alloc::{sync::Arc, vec::Vec};
 use lazy_static::*;
 use manager::fetch_task;
 use process::ProcessControlBlock;
+pub use process::ProcessControlBlockInner;
 use switch::__switch;
 
 pub use context::TaskContext;

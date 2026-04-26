@@ -11,7 +11,7 @@ pub trait Mutex: Sync + Send {
     /// Lock the mutex
     fn lock(&self);
     /// Unlock the mutex
-    fn unlock(&self);
+    fn unlock(&self) -> Option<Arc<TaskControlBlock>>;
 }
 
 /// Spinlock Mutex struct
@@ -45,10 +45,11 @@ impl Mutex for MutexSpin {
         }
     }
 
-    fn unlock(&self) {
+    fn unlock(&self) -> Option<Arc<TaskControlBlock>> {
         trace!("kernel: MutexSpin::unlock");
         let mut locked = self.locked.exclusive_access();
         *locked = false;
+        None
     }
 }
 
@@ -92,14 +93,16 @@ impl Mutex for MutexBlocking {
     }
 
     /// unlock the blocking mutex
-    fn unlock(&self) {
+    fn unlock(&self) -> Option<Arc<TaskControlBlock>> {
         trace!("kernel: MutexBlocking::unlock");
         let mut mutex_inner = self.inner.exclusive_access();
         assert!(mutex_inner.locked);
         if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
-            wakeup_task(waking_task);
+            wakeup_task(Arc::clone(&waking_task));
+            Some(waking_task)
         } else {
             mutex_inner.locked = false;
+            None
         }
     }
 }

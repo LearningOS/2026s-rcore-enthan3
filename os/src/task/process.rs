@@ -5,8 +5,9 @@ use super::manager::insert_into_pid2process;
 use super::TaskControlBlock;
 use super::{add_task, SignalFlags};
 use super::{pid_alloc, PidHandle};
+use crate::config::USER_STACK_SIZE;
 use crate::fs::{File, Stdin, Stdout};
-use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
+use crate::mm::{translated_refmut, MemorySet, VirtAddr, KERNEL_SPACE};
 use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
 use alloc::string::String;
@@ -35,6 +36,10 @@ pub struct ProcessControlBlockInner {
     pub children: Vec<Arc<ProcessControlBlock>>,
     /// exit code
     pub exit_code: i32,
+    /// Heap bottom
+    pub heap_bottom: usize,
+    /// Program break
+    pub program_brk: usize,
     /// file descriptor table
     pub fd_table: Vec<Option<Arc<dyn File + Send + Sync>>>,
     /// signal flags
@@ -49,6 +54,18 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// deadlock detection switch
+    pub deadlock_detect: bool,
+    /// mutex owner tid, indexed by mutex id
+    pub mutex_owners: Vec<Option<usize>>,
+    /// mutex requested by each tid
+    pub mutex_requests: Vec<Option<usize>>,
+    /// semaphore available counts
+    pub semaphore_available: Vec<usize>,
+    /// semaphore allocation matrix indexed by tid then sem id
+    pub semaphore_alloc: Vec<Vec<usize>>,
+    /// semaphore request matrix indexed by tid then sem id
+    pub semaphore_request: Vec<Vec<usize>>,
 }
 
 impl ProcessControlBlockInner {
@@ -94,6 +111,7 @@ impl ProcessControlBlock {
         trace!("kernel: ProcessControlBlock::new");
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
+        let heap_bottom = ustack_base + USER_STACK_SIZE;
         // allocate a pid
         let pid_handle = pid_alloc();
         let process = Arc::new(Self {
@@ -105,6 +123,8 @@ impl ProcessControlBlock {
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
+                    heap_bottom,
+                    program_brk: heap_bottom,
                     fd_table: vec![
                         // 0 -> stdin
                         Some(Arc::new(Stdin)),
@@ -119,6 +139,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_owners: Vec::new(),
+                    mutex_requests: Vec::new(),
+                    semaphore_available: Vec::new(),
+                    semaphore_alloc: Vec::new(),
+                    semaphore_request: Vec::new(),
                 })
             },
         });
@@ -158,10 +184,16 @@ impl ProcessControlBlock {
         // memory_set with elf program headers/trampoline/trap context/user stack
         trace!("kernel: exec .. MemorySet::from_elf");
         let (memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
+        let heap_bottom = ustack_base + USER_STACK_SIZE;
         let new_token = memory_set.token();
         // substitute memory_set
         trace!("kernel: exec .. substitute memory_set");
-        self.inner_exclusive_access().memory_set = memory_set;
+        {
+            let mut inner = self.inner_exclusive_access();
+            inner.memory_set = memory_set;
+            inner.heap_bottom = heap_bottom;
+            inner.program_brk = heap_bottom;
+        }
         // then we alloc user resource for main thread again
         // since memory_set has been changed
         trace!("kernel: exec .. alloc user resource for main thread again");
@@ -238,6 +270,8 @@ impl ProcessControlBlock {
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
                     exit_code: 0,
+                    heap_bottom: parent.heap_bottom,
+                    program_brk: parent.program_brk,
                     fd_table: new_fd_table,
                     signals: SignalFlags::empty(),
                     tasks: Vec::new(),
@@ -245,6 +279,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_owners: Vec::new(),
+                    mutex_requests: Vec::new(),
+                    semaphore_available: Vec::new(),
+                    semaphore_alloc: Vec::new(),
+                    semaphore_request: Vec::new(),
                 })
             },
         });
@@ -278,8 +318,100 @@ impl ProcessControlBlock {
         add_task(task);
         child
     }
+    /// Spawn a child process from an ELF file.
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        trace!("kernel: spawn");
+        let (memory_set, ustack_base, entry_point) = MemorySet::from_elf(elf_data);
+        let heap_bottom = ustack_base + USER_STACK_SIZE;
+        let pid = pid_alloc();
+        let mut parent = self.inner_exclusive_access();
+        let mut new_fd_table: Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
+        for fd in parent.fd_table.iter() {
+            new_fd_table.push(fd.as_ref().map(Arc::clone));
+        }
+        let child = Arc::new(Self {
+            pid,
+            inner: unsafe {
+                UPSafeCell::new(ProcessControlBlockInner {
+                    is_zombie: false,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom,
+                    program_brk: heap_bottom,
+                    fd_table: new_fd_table,
+                    signals: SignalFlags::empty(),
+                    tasks: Vec::new(),
+                    task_res_allocator: RecycleAllocator::new(),
+                    mutex_list: Vec::new(),
+                    semaphore_list: Vec::new(),
+                    condvar_list: Vec::new(),
+                    deadlock_detect: false,
+                    mutex_owners: Vec::new(),
+                    mutex_requests: Vec::new(),
+                    semaphore_available: Vec::new(),
+                    semaphore_alloc: Vec::new(),
+                    semaphore_request: Vec::new(),
+                })
+            },
+        });
+        parent.children.push(Arc::clone(&child));
+        drop(parent);
+
+        let task = Arc::new(TaskControlBlock::new(
+            Arc::clone(&child),
+            ustack_base,
+            true,
+        ));
+        let task_inner = task.inner_exclusive_access();
+        let trap_cx = task_inner.get_trap_cx();
+        let ustack_top = task_inner.res.as_ref().unwrap().ustack_top();
+        let kstack_top = task.kstack.get_top();
+        drop(task_inner);
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            ustack_top,
+            KERNEL_SPACE.exclusive_access().token(),
+            kstack_top,
+            trap_handler as usize,
+        );
+        child
+            .inner_exclusive_access()
+            .tasks
+            .push(Some(Arc::clone(&task)));
+        insert_into_pid2process(child.getpid(), Arc::clone(&child));
+        add_task(task);
+        child
+    }
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0
+    }
+
+    /// Change the program break and return the old break on success.
+    pub fn change_program_brk(&self, size: i32) -> Option<usize> {
+        let mut inner = self.inner_exclusive_access();
+        let heap_bottom = inner.heap_bottom;
+        let old_break = inner.program_brk;
+        let new_brk = inner.program_brk as isize + size as isize;
+        if new_brk < heap_bottom as isize {
+            return None;
+        }
+        let result = if size < 0 {
+            inner
+                .memory_set
+                .shrink_to(VirtAddr(heap_bottom), VirtAddr(new_brk as usize))
+        } else {
+            inner
+                .memory_set
+                .append_to(VirtAddr(heap_bottom), VirtAddr(new_brk as usize))
+        };
+        if result {
+            inner.program_brk = new_brk as usize;
+            Some(old_break)
+        } else {
+            None
+        }
     }
 }
